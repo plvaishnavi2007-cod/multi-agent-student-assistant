@@ -4,3 +4,4 @@ numpy
 matplotlib
 google-genai
 python-dotenv
+pytubefix
