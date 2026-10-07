@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 import os
 import json
+import time
 
 from dotenv import load_dotenv
 from google import genai
+from database import get_student
 
 from coordinator_agent import coordinator
 from performance_agent import analyze_student
@@ -25,18 +28,11 @@ st.set_page_config(
 # =========================================================
 # AI
 # =========================================================
-
 load_dotenv(override=True)
-
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
-
-
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # =========================================================
 # CSS
 # =========================================================
-
 st.markdown("""
 <style>
 
@@ -127,44 +123,45 @@ section[data-testid="stSidebar"] * {
 """, unsafe_allow_html=True)
 
 
-# =========================================================
-# LOAD DATA
-# =========================================================
-
-data = pd.read_csv("data/students.csv")
-
-
-# =========================================================
-# LOGIN
-# =========================================================
+# ================= LOGIN =================
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
+if "student_data" not in st.session_state:
+    st.session_state.student_data = None
 
-if not st.session_state.logged_in:
 
-    st.markdown(
-        "<div class='title' style='text-align:center;'>🎓 Multi-Agent Student Assistant</div>",
-        unsafe_allow_html=True
-    )
+if not st.session_state.logged_in or st.session_state.student_data is None:
 
-    st.markdown(
-        "<div class='subtitle' style='text-align:center;'>Your Personalized AI Academic Assistant</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("""
+        <div style="
+            max-width: 650px;
+            margin: 80px auto 20px auto;
+            text-align: center;
+        ">
+            <h1 style="font-size: 42px; margin-bottom: 10px;">
+                🎓 Student Assistant
+            </h1>
 
-    _, center, _ = st.columns([1, 1.2, 1])
+        </div>
+    """, unsafe_allow_html=True)
 
-    with center:
+    # Login box
+    col1, col2, col3 = st.columns([1, 3, 1])
+
+    with col2:
 
         st.markdown("""
-        <div class="card">
-            <div class="card-title">🔐 Student Login</div>
-            <div class="card-text">
-                Sign in to access your academic dashboard.
+            <div style="
+                text-align: center;
+                margin-bottom: 15px;
+            ">
+                <h2>🔐 Student Login</h2>
+                <p style="color: #777;">
+                    Enter your Student ID and password to continue
+                </p>
             </div>
-        </div>
         """, unsafe_allow_html=True)
 
         student_id = st.text_input(
@@ -174,20 +171,23 @@ if not st.session_state.logged_in:
 
         password = st.text_input(
             "Password",
-            type="password"
+            type="password",
+            placeholder="Enter your password"
         )
 
-        if st.button("🚀 Login", use_container_width=True):
+        if st.button(
+            "🚀 Login",
+            use_container_width=True
+        ):
 
-            student = data[
-                (data["Student_ID"].astype(str) == student_id) &
-                (data["Password"].astype(str) == password)
-            ]
+            student = get_student(student_id, password)
 
-            if not student.empty:
+            if student is not None:
 
                 st.session_state.logged_in = True
                 st.session_state.student_id = student_id
+                st.session_state.student_data = student
+
                 st.rerun()
 
             else:
@@ -196,18 +196,10 @@ if not st.session_state.logged_in:
     st.stop()
 
 
-# =========================================================
-# STUDENT
-# =========================================================
+# ================= STUDENT DATA =================
 
-student_data = data[
-    data["Student_ID"].astype(str)
-    == str(st.session_state.student_id)
-].iloc[0]
-
+student_data = st.session_state.student_data
 student_name = student_data["Name"]
-
-
 # =========================================================
 # SIDEBAR
 # =========================================================
@@ -316,7 +308,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 )
 
 
-# =========================================================
+## =========================================================
 # TAB 1 - PERFORMANCE
 # =========================================================
 
@@ -331,6 +323,7 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
+    # BAR CHART ONLY FOR ACADEMIC PERFORMANCE
     chart_data = pd.DataFrame(
         {
             "Subject": list(subjects.keys()),
@@ -338,8 +331,23 @@ with tab1:
         }
     )
 
-    st.bar_chart(
-        chart_data.set_index("Subject")
+    fig = px.bar(
+        chart_data,
+        x="Subject",
+        y="Marks",
+        text="Marks"
+    )
+
+    fig.update_layout(
+        height=300,
+        yaxis=dict(range=[0, 100]),
+        hovermode=False
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False}
     )
 
     if st.button(
@@ -371,40 +379,75 @@ with tab2:
 
     st.markdown("""
     <div class="card">
-        <div class="card-title">📅 Study Planner</div>
+        <div class="card-title">📅 Today's Study Planner</div>
         <div class="card-text">
-            Create a personalized study plan using AI.
+            Personalized study plan based on your marks.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    days = st.selectbox(
-        "Study Plan",
-        ["1 Week", "2 Weeks", "1 Month"]
+    hours = st.selectbox(
+        "⏰ Study Hours Today",
+        [3, 4, 5, 6, 7, 8]
     )
 
-    if st.button(
-        "✨ Generate Study Plan",
-        key="planner_button"
-    ):
+    if st.button("✨ Generate Today's Plan",
+                 key="planner_button"):
 
-        try:
+        plan = sorted(
+            subjects.items(),
+            key=lambda x: x[1]
+        )
 
-            result = coordinator(
-                f"Create a {days} study plan for me.",
-                student_name
+        st.session_state.today_plan = plan
+
+    # Show saved plan
+    if "today_plan" in st.session_state:
+
+        plan = st.session_state.today_plan
+
+        st.success("✅ Today's Study Plan")
+
+        for i, (subject, marks) in enumerate(plan):
+
+            if marks < 50:
+                duration = "1.5 hours"
+                activity = "Learn concepts + practice"
+            elif marks < 70:
+                duration = "1 hour"
+                activity = "Study + solve questions"
+            else:
+                duration = "30 minutes"
+                activity = "Revision + practice"
+
+            completed = st.checkbox(
+                f"📚 {subject} — {duration}",
+                key=f"completed_{i}"
             )
 
-            st.markdown(
-                f"<div class='ai'>{result}</div>",
-                unsafe_allow_html=True
+            st.caption(
+                f"🎯 {activity} | Marks: {marks}%"
             )
 
-        except Exception as e:
+        completed_count = sum(
+            st.session_state.get(
+                f"completed_{i}", False
+            )
+            for i in range(len(plan))
+        )
 
-            st.error(f"Unable to create plan: {e}")
+        st.success(
+            f"📊 Today's Progress: "
+            f"{completed_count}/{len(plan)} tasks completed"
+        )
 
+        progress = completed_count / len(plan)
 
+        st.progress(progress)
+
+        if completed_count == len(plan):
+            st.balloons()
+            st.success("🎉 Great job! You completed today's plan!")
 # =========================================================
 # TAB 3 - STUDY HELP
 # =========================================================
@@ -457,12 +500,13 @@ Give:
                 )
 
             except Exception as e:
-
-                st.error(f"Unable to answer: {e}")
+                if "503" in str(e):
+                    st.warning("The AI assistant is temporarily busy. "
+            "Please try again in a moment.")
 
         else:
 
-            st.warning("Please enter a subject or topic.")
+            st.error(f"Unable to answer:{e}")
 
 
 # =========================================================
@@ -802,61 +846,147 @@ Do not add any text outside JSON.
                 f"💡 Explanation: {q['explanation']}"
             )
 
-
-# =========================================================
+# ==============================
 # GENERAL AI ASSISTANT
-# =========================================================
-
+# ==============================
 st.divider()
 
-st.subheader(
-    "💬 Ask Your Student Assistant"
-)
+st.subheader("💬 Ask Your Student Assistant")
 
 question = st.text_input(
-    "Your question",
+    "Your question or topic",
     placeholder="Ask anything about your studies..."
 )
+# ==============================
+# TEXT EXPLANATION
+# ==============================
 
-if st.button(
-    "🤖 Ask Assistant",
-    key="general_ai"
-):
+if st.button("💬 Ask Assistant", key="general_ai"):
 
     if question.strip():
 
-        try:
+        with st.spinner("AI is preparing your answer..."):
 
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=f"""
+            for attempt in range(3):
+
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=f"""
 You are a helpful college Student Assistant.
 
 Student: {student_name}
 
-Answer this question clearly and simply:
+Question: {question}
+
+Explain clearly using simple language.
+Give examples wherever helpful.
+Make the answer suitable for college students.
+"""
+                    )
+
+                    if response.text:
+                        st.markdown("### 📚 Answer")
+                        st.markdown(response.text)
+
+                    else:
+                        st.warning("No response received. Please try again.")
+
+                    break
+
+                except Exception as e:
+
+                    error = str(e).upper()
+
+                    if "429" in error or "RESOURCE_EXHAUSTED" in error:
+
+                        st.warning(
+                            "Today's AI request limit has been reached. "
+                            "Please try again later."
+                        )
+                        break
+
+                    elif "503" in error or "UNAVAILABLE" in error:
+
+                        st.error("Gemini returned a 503 error.")
+                        st.code(str(e))
+                        break
+
+                    else:
+                        st.error(
+                            "Unable to answer your question. "
+                            "Please check the API configuration."
+                        )
+                        break
+    else:
+        st.warning("Please enter a question first.")
+
+
+# ==============================
+# AI IMAGE GENERATION
+# ==============================
+
+st.divider()
+
+st.subheader("🎨 AI Learning Visual")
+
+st.write(
+    "Generate an educational image to understand your topic visually."
+)
+
+if st.button("🎨 Generate Image", key="generate_image"):
+
+    if question.strip():
+
+        with st.spinner("Creating your educational image..."):
+
+            try:
+                image_response = client.models.generate_content(
+                    model="gemini-3.1-flash-image",
+                    contents=f"""
+Create a clear, colorful educational illustration
+for a college student about:
 
 {question}
+
+Make the image visually attractive,
+easy to understand, and suitable for learning.
+Use a clean educational infographic style.
 """
-            )
+                )
 
-            st.markdown(
-                f"<div class='ai'>{response.text}</div>",
-                unsafe_allow_html=True
-            )
+                image_found = False
 
-        except Exception as e:
+                for part in image_response.parts:
 
-            st.error(
-                f"Unable to answer: {e}"
-            )
+                    if part.inline_data is not None:
+
+                        generated_image = part.as_image()
+
+                        st.markdown("### 🖼️ Generated Learning Image")
+
+                        st.image(
+                            generated_image,
+                            caption=f"AI-generated visual: {question}",
+                            use_container_width=True
+                        )
+
+                        image_found = True
+                        break
+
+                if not image_found:
+                    st.warning(
+                        "No image was returned. Please try again."
+                    )
+
+            except Exception as e:
+                st.error(
+                    "Image generation is temporarily unavailable. "
+                    "Please try again later."
+                )
 
     else:
-
-        st.warning(
-            "Please enter your question."
-        )
-
+        st.warning("Please enter a topic first.")
 
 # =========================================================
 # FOOTER
